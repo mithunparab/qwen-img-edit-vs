@@ -2,6 +2,7 @@ import gradio as gr
 import torch
 import numpy as np
 import spaces
+import math
 from PIL import Image
 from diffusers import FlowMatchEulerDiscreteScheduler
 from qwenimage.pipeline_qwen_image_edit import QwenImageEditPipeline as QwenImageEditPipelineCustom
@@ -26,16 +27,22 @@ def load_pipeline():
     if not torch.cuda.is_available():
         raise RuntimeError("GPU is required for inference.")
 
+
     scheduler_config = {
         "base_image_seq_len": 256,
-        "base_shift": 1.0986,
+        "base_shift": math.log(3),
+        "invert_sigmas": False,
         "max_image_seq_len": 8192,
-        "max_shift": 1.0986,
+        "max_shift": math.log(3),
         "num_train_timesteps": 1000,
         "shift": 1.0,
-        "use_dynamic_shifting": True,
-        "time_shift_type": "exponential",
+        "shift_terminal": None,
         "stochastic_sampling": False,
+        "time_shift_type": "exponential",
+        "use_beta_sigmas": False,
+        "use_dynamic_shifting": True,
+        "use_exponential_sigmas": False,
+        "use_karras_sigmas": False,
     }
     scheduler = FlowMatchEulerDiscreteScheduler.from_config(scheduler_config)
 
@@ -61,7 +68,10 @@ def load_pipeline():
         print(f"Could not load LoRA: {e}")
 
     try:
-        optimize_pipeline_(pipe, image=Image.new("RGB", (512, 512)), prompt="a")
+        # Optimization needs a dummy run
+        print("Compiling the model... this may take a minute.")
+        optimize_pipeline_(pipe, image=Image.new("RGB", (1024, 1024)), prompt="a cat")
+        print("Compilation complete.")
     except Exception as e:
         print(f"AOT compile failed: {e}")
 
@@ -69,14 +79,14 @@ def load_pipeline():
 
 MAX_SEED = np.iinfo(np.int32).max
 
-@gr.on(app="app.py", fn="infer")
+
 @spaces.GPU(duration=60)
 def infer(
     image: Image.Image,
     prompt: str,
     seed: int = 42,
     randomize_seed: bool = False,
-    true_guidance_scale: float = 1.0,
+    true_guidance_scale: float = 4.0,
     num_inference_steps: int = 8,
     num_outputs: int = 1,
 ):
@@ -95,17 +105,30 @@ def infer(
     Raises:
         Exception: If inference fails.
     """
+    if image is None:
+        raise gr.Error("Please upload an image to edit.")
+        
     if randomize_seed:
         seed = np.random.randint(0, MAX_SEED)
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
     pipe = load_pipeline()
 
+    PRESERVATION_PROMPT_SUFFIX = (
+        "Strictly preserve all unmentioned objects, details, and the overall composition of the original image. "
+        "This includes keeping background elements like doors, windows, and furniture exactly as they are."
+    )
+    
+    final_prompt = f"{prompt}. {PRESERVATION_PROMPT_SUFFIX}"
+    
+    print(f"Original User Prompt: '{prompt}'")
+    print(f"Final Prompt Sent to Model: '{final_prompt}'")
+    
     try:
         outputs = pipe(
             image=image,
-            prompt=prompt,
-            negative_prompt=" ",
+            prompt=final_prompt, 
+            negative_prompt="", 
             num_inference_steps=num_inference_steps,
             generator=generator,
             true_cfg_scale=true_guidance_scale,
@@ -154,7 +177,7 @@ with gr.Blocks(css=css, title="Qwen-Image Edit") as demo:
 
         with gr.Row():
             true_guidance_scale = gr.Slider(
-                label="True Guidance Scale", minimum=1.0, maximum=10.0, step=0.1, value=1.0
+                label="True Guidance Scale", minimum=1.0, maximum=10.0, step=0.1, value=4.0
             )
             num_inference_steps = gr.Slider(
                 label="Inference Steps", minimum=4, maximum=28, step=1, value=8
