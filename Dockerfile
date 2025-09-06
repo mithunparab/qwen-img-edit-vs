@@ -22,9 +22,6 @@ COPY optimization.py ./optimization.py
 COPY download.py ./
 RUN python download.py
 
-COPY compile.py ./
-RUN python compile.py
-
 COPY handler.py ./
 
 CMD ["python", "-u", "handler.py"]
